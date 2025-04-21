@@ -23,6 +23,16 @@ def make_packet(pkt_type, seq_num, payload=b''):
     header.checksum = chksum
     pkt = header / payload
     return bytes(pkt)
+    
+def calculate_time(timer_start):
+    if timer_start is not None:
+        time_elapsed = time.time() - timer_start
+        timeout_interval = 0.5 - time_elapsed
+    else:
+        timeout_interval = 0.5
+    if timeout_interval <= 0:
+        timeout_interval = 0.001
+    return timeout_interval
 
 def sender(receiver_ip, receiver_port, window_size):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -31,7 +41,8 @@ def sender(receiver_ip, receiver_port, window_size):
     message = sys.stdin.buffer.read()
     total_bytes = len(message)
 
-    #Sending START packet
+    # 2-way handshake
+    # Sending START packet
     start_packet = make_packet(TYPE_START, 0, b'')
     while True:
         s.sendto(start_packet, (receiver_ip, receiver_port))
@@ -48,6 +59,8 @@ def sender(receiver_ip, receiver_port, window_size):
             continue
 
     num_packets = math.ceil(total_bytes / MAX_PAYLOAD_SIZE)
+    
+    # Key is seq_num and value is packet
     data_packets = {}
     for i in range(num_packets):
         chunk = message[i * MAX_PAYLOAD_SIZE : (i + 1) * MAX_PAYLOAD_SIZE]
@@ -55,44 +68,43 @@ def sender(receiver_ip, receiver_port, window_size):
         data_packets[i + 1] = packet
 
     base = 1         
-    next_seq = 1     
-    timer_start = None
+    next_seq = 1
+    send_time = {}
 
     while base <= num_packets:
+        # Send all packet in window
         while next_seq < base + window_size and next_seq <= num_packets:
             s.sendto(data_packets[next_seq], (receiver_ip, receiver_port))
-            if base == next_seq:
-                timer_start = time.time()
+            send_time[next_seq] = time.time()
             next_seq += 1
-
-        if timer_start is not None:
-            time_elapsed = time.time() - timer_start
-            timeout_interval = 0.5 - time_elapsed
-        else:
-            timeout_interval = 0.5
-        if timeout_interval <= 0:
-            timeout_interval = 0.001
-        s.settimeout(timeout_interval)
+        
+        s.settimeout(calculate_time(send_time[base]))
 
         try:
-            ack_data, addr = s.recvfrom(2048)
-            ack_hdr = PacketHeader(ack_data[:16])
-            stored_chksum = ack_hdr.checksum
-            ack_hdr.checksum = 0
-            if stored_chksum != compute_checksum(ack_hdr / b''):
-                continue  
-            if ack_hdr.type == TYPE_ACK:
-                ack_seq = ack_hdr.seq_num
-                if ack_seq > base:
-                    base = ack_seq
-                    if base < next_seq:
-                        timer_start = time.time()
-                    else:
-                        timer_start = None
+            while True:
+                ack_data, addr = s.recvfrom(2048)
+                ack_hdr = PacketHeader(ack_data[:16])
+                stored_chksum = ack_hdr.checksum
+                ack_hdr.checksum = 0
+                if stored_chksum != compute_checksum(ack_hdr / b''):
+                    continue
+                if ack_hdr.type == TYPE_ACK:
+                    ack_seq = ack_hdr.seq_num
+                    if ack_seq > base:
+                        base = ack_seq
+                        while next_seq < base + window_size and next_seq <= num_packets:
+                            s.sendto(data_packets[next_seq], (receiver_ip, receiver_port))
+                            send_time[next_seq] = time.time()
+                            next_seq += 1
+                        if base < next_seq:
+                            s.settimeout(calculate_time(send_time[base]))
+                        else:
+                            break; 
         except socket.timeout:
             for seq in range(base, next_seq):
                 s.sendto(data_packets[seq], (receiver_ip, receiver_port))
-            timer_start = time.time()  
+                send_time[seq] = time.time()
+            s.settimeout(calculate_time(send_time[base]))
 
     #Sending END packet
     end_seq = num_packets + 1
@@ -120,4 +132,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

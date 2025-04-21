@@ -23,6 +23,7 @@ def receiver(receiver_ip, receiver_port, window_size):
     s.settimeout(0.5)
 
     in_connection = False
+    handshake = 0        # 0: not SYN, 1: SYN-ACK, 2: completed
     expected_seq = 1
     received_packets = {}
 
@@ -46,17 +47,38 @@ def receiver(receiver_ip, receiver_port, window_size):
         pkt_type = pkt_header.type
         seq_num  = pkt_header.seq_num
 
-        if pkt_type == TYPE_START:
-            if not in_connection:
-                in_connection = True
-                expected_seq = 1
-                received_packets = {}
-                ack_pkt = make_ack(1)
-                s.sendto(ack_pkt, addr)
-            else:
-                continue
+        if pkt_type == TYPE_START and handshake == 0:
+            s.sendto(make_ack(0), addr)
+            handshake = 1
+            continue
 
-        elif pkt_type == TYPE_DATA:
+        elif pkt_type == TYPE_ACK and handshake == 1 and seq_num == 1:
+            in_connection = True
+            handshake = 2
+            expected_seq = 1
+            received_packets = {}
+            break
+
+    while True:
+        try:
+            pkt, addr = s.recvfrom(2048)
+        except socket.timeout:
+            continue
+
+        if len(pkt) < 16:
+            continue
+
+        pkt_header = PacketHeader(pkt[:16])
+        payload = pkt[16:16 + pkt_header.length]
+
+        stored_chk = pkt_header.checksum
+        pkt_header.checksum = 0
+        if stored_chk != compute_checksum(pkt_header / payload):
+            continue
+
+        pkt_type = pkt_header.type
+        seq_num  = pkt_header.seq_num
+        if pkt_type == TYPE_DATA:
             if not in_connection:
                 continue
             if seq_num >= expected_seq + window_size:
