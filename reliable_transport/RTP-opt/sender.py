@@ -85,7 +85,10 @@ def sender(receiver_ip, receiver_port, window_size):
                         dup_ack_count[ack_seq] += 1
                         if dup_ack_count[ack_seq] == 3:
                             if ack_seq < num_packets:
-                                s.sendto(data_packets[ack_seq + 1], (receiver_ip, receiver_port))
+                                for seq in range(base, min(base + window_size, num_packets+1)):
+                                    if not acked[seq]:
+                                        s.sendto(data_packets[seq], (receiver_ip, receiver_port))
+                                    next_seq = min(base + window_size, num_packets + 1)
                                 dup_ack_count[ack_seq] = 0
                         continue
                     if 1 <= ack_seq <= num_packets:
